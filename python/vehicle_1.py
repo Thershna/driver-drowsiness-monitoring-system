@@ -188,3 +188,244 @@ motor_active = False
 
 total_buzzer_triggers = 0
 total_motor_triggers = 0
+
+# --------------------------------------------------------
+# Main Detection Loop
+# --------------------------------------------------------
+
+while True:
+
+    ret, frame = cap.read()
+
+    if not ret:
+        break
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    faces = detector(gray)
+
+    status_payload = {
+
+        "publisher_ip": VEHICLE_ID,
+
+        "eye_count": int(duration),
+
+        "buzzer_count": total_buzzer_triggers,
+
+        "motor_count": total_motor_triggers,
+
+        "eye_closed": False
+
+    }
+
+    for face in faces:
+
+        shape = predictor(gray, face)
+
+        coords = [
+
+            (shape.part(i).x, shape.part(i).y)
+
+            for i in range(68)
+
+        ]
+
+        left_eye = [coords[i] for i in LEFT_EYE]
+
+        right_eye = [coords[i] for i in RIGHT_EYE]
+
+        left_ear = eye_aspect_ratio(left_eye)
+
+        right_ear = eye_aspect_ratio(right_eye)
+
+        ear = (left_ear + right_ear) / 2.0
+
+        # ----------------------------------------
+        # Driver Eyes Closed
+        # ----------------------------------------
+
+        if ear < EAR_THRESHOLD:
+
+            if start_time is None:
+
+                start_time = time.time()
+
+            duration = round(
+
+                time.time() - start_time,
+
+                2
+
+            )
+
+            status_payload["eye_closed"] = True
+
+            status_payload["eye_count"] = int(duration)
+
+            cv2.putText(
+
+                frame,
+
+                f"Eyes Closed : {duration}s",
+
+                (20, 40),
+
+                cv2.FONT_HERSHEY_SIMPLEX,
+
+                0.7,
+
+                (0, 0, 255),
+
+                2
+
+            )
+
+            # ----------------------------
+            # Warning Level
+            # ----------------------------
+
+            if duration > BUZZER_THRESHOLD:
+
+                if not buzzer_active:
+
+                    total_buzzer_triggers += 1
+
+                    buzzer_active = True
+
+                    client.publish(
+
+                        CONTROL_TOPIC,
+
+                        "BUZZER_ON"
+
+                    )
+
+            # ----------------------------
+            # Alert Level
+            # ----------------------------
+
+            if duration > MOTOR_THRESHOLD:
+
+                if not motor_active:
+
+                    total_motor_triggers += 1
+
+                    motor_active = True
+
+                    client.publish(
+
+                        CONTROL_TOPIC,
+
+                        "MOTOR_ON"
+
+                    )
+
+            # ----------------------------
+            # Emergency Level
+            # ----------------------------
+
+            if duration > EMAIL_THRESHOLD:
+
+                if not email_sent:
+
+                    send_email_alert()
+
+                    email_sent = True
+
+        # ----------------------------------------
+        # Driver Awake
+        # ----------------------------------------
+
+        else:
+
+            start_time = None
+
+            duration = 0
+
+            email_sent = False
+
+            buzzer_active = False
+
+            motor_active = False
+
+            status_payload["eye_closed"] = False
+
+            status_payload["eye_count"] = 0
+
+            cv2.putText(
+
+                frame,
+
+                "Eyes Open",
+
+                (20, 40),
+
+                cv2.FONT_HERSHEY_SIMPLEX,
+
+                0.7,
+
+                (0, 255, 0),
+
+                2
+
+            )
+
+            client.publish(
+
+                CONTROL_TOPIC,
+
+                "BUZZER_OFF"
+
+            )
+
+            client.publish(
+
+                CONTROL_TOPIC,
+
+                "MOTOR_OFF"
+
+            )
+
+    # ----------------------------------------
+    # Publish Dashboard Data
+    # ----------------------------------------
+
+    client.publish(
+
+        STATUS_TOPIC,
+
+        json.dumps(status_payload)
+
+    )
+
+    # ----------------------------------------
+    # Display Camera Feed
+    # ----------------------------------------
+
+    cv2.imshow(
+
+        f"{VEHICLE_ID} Driver Monitor",
+
+        frame
+
+    )
+
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == 27:
+
+        break
+
+# --------------------------------------------------------
+# Cleanup
+# --------------------------------------------------------
+
+cap.release()
+
+cv2.destroyAllWindows()
+
+client.loop_stop()
+
+client.disconnect()
+
+print("\nVehicle monitoring stopped.")
